@@ -8,7 +8,7 @@ This is useful for DeepSeek API. It sends:
   "model": "deepseek-v4-flash",
   "prompt": "<prefix before cursor>",
   "suffix": "<suffix after cursor>",
-  "max_tokens": 64
+  "max_tokens": ...
 }
 ```
 to `https://api.deepseek.com/beta/completions`, and inserts `choices[0].text` as an inline completion.
