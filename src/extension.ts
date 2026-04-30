@@ -4,7 +4,7 @@ import * as vscode from 'vscode';
 // const agent = new https.Agent({ keepAlive: true });
 
 const SECRET_KEY = 'FIM.apiKey';
-const output = vscode.window.createOutputChannel('DeepSeek FIM');
+const output = vscode.window.createOutputChannel('FIM');
 
 interface ExtensionConfig {
     enabled: boolean;
@@ -127,7 +127,7 @@ function cleanupCompletion(text: string): string {
 
 
 
-async function requestDeepSeekFim(
+async function requestFim(
     apiKey: string,
     cfg: ExtensionConfig,
     prefix: string,
@@ -271,7 +271,7 @@ function buildProvider(context: vscode.ExtensionContext): vscode.InlineCompletio
                 if (!warnedMissingKey) {
                     warnedMissingKey = true;
                     vscode.window.showWarningMessage(
-                        `DeepSeek FIM: no API key. Run "DeepSeek FIM: Set API Key" or set ${cfg.apiKeyEnvVar}.`,
+                        `FIM: no API key. Run "FIM: Set API Key" or set ${cfg.apiKeyEnvVar}.`,
                     );
                 }
                 return undefined;
@@ -289,7 +289,7 @@ function buildProvider(context: vscode.ExtensionContext): vscode.InlineCompletio
                 ]);
             }
 
-            const completion = await requestDeepSeekFim(apiKey, cfg, prefix, suffix, token);
+            const completion = await requestFim(apiKey, cfg, prefix, suffix, token);
             if (!completion || token.isCancellationRequested) {
                 return undefined;
             }
@@ -306,7 +306,7 @@ function buildProvider(context: vscode.ExtensionContext): vscode.InlineCompletio
 
 async function setApiKey(context: vscode.ExtensionContext): Promise<void> {
     const key = await vscode.window.showInputBox({
-        title: 'DeepSeek FIM API Key',
+        title: 'FIM API Key',
         prompt: 'Enter the API key. It will be stored in VS Code SecretStorage.',
         password: true,
         ignoreFocusOut: true,
@@ -318,24 +318,24 @@ async function setApiKey(context: vscode.ExtensionContext): Promise<void> {
     }
 
     await context.secrets.store(SECRET_KEY, key.trim());
-    vscode.window.showInformationMessage('DeepSeek FIM API key saved.');
+    vscode.window.showInformationMessage('FIM API key saved.');
 }
 
 async function clearApiKey(context: vscode.ExtensionContext): Promise<void> {
     await context.secrets.delete(SECRET_KEY);
-    vscode.window.showInformationMessage('DeepSeek FIM API key cleared.');
+    vscode.window.showInformationMessage('FIM API key cleared.');
 }
 
 async function testRequest(context: vscode.ExtensionContext): Promise<void> {
     const cfg = getConfig();
     const apiKey = await getApiKey(context, cfg);
     if (!apiKey) {
-        vscode.window.showWarningMessage(`DeepSeek FIM: no API key. Run "DeepSeek FIM: Set API Key" first.`);
+        vscode.window.showWarningMessage(`FIM: no API key. Run "FIM: Set API Key" first.`);
         return;
     }
 
     const source = new vscode.CancellationTokenSource();
-    const text = await requestDeepSeekFim(
+    const text = await requestFim(
         apiKey,
         cfg,
         'def fib(a):\n    ',
@@ -346,10 +346,10 @@ async function testRequest(context: vscode.ExtensionContext): Promise<void> {
     if (text) {
         output.appendLine(`[test completion]\n${text}`);
         output.show(true);
-        vscode.window.showInformationMessage('DeepSeek FIM test succeeded. See the DeepSeek FIM output channel.');
+        vscode.window.showInformationMessage('FIM test succeeded. See the FIM output channel.');
     } else {
         output.show(true);
-        vscode.window.showWarningMessage('DeepSeek FIM test failed. See the DeepSeek FIM output channel.');
+        vscode.window.showWarningMessage('FIM test failed. See the FIM output channel.');
     }
 }
 
@@ -357,11 +357,11 @@ async function toggleEnabled(): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('FIM');
     const current = cfg.get<boolean>('enabled', true);
     await cfg.update('enabled', !current, vscode.ConfigurationTarget.Global);
-    vscode.window.showInformationMessage(`DeepSeek FIM inline completion ${!current ? 'enabled' : 'disabled'}.`);
+    vscode.window.showInformationMessage(`FIM inline completion ${!current ? 'enabled' : 'disabled'}.`);
 }
 
 export function activate(context: vscode.ExtensionContext): void {
-    output.appendLine('DeepSeek FIM extension activated.');
+    output.appendLine('FIM extension activated.');
 
     context.subscriptions.push(output);
 

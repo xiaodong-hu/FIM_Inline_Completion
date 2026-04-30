@@ -1,9 +1,11 @@
 {
     "name": "fim-inline",
     "displayName": "FIM Inline Completion",
-    "description": "Minimal VS Code inline completion provider for AI FIM /completions API, useful for DeepSeek.",
-    "version": "0.1",
+    "description": "Minimal VS Code inline completion provider for AI FIM /completions API.",
+    "type": "module",
+    "version": "0.1.0",
     "publisher": "xiaodong-hu",
+    "repository": "https://github.com/xiaodong-hu/FIM_Inline_Completion",
     "license": "MIT",
     "engines": {
         "vscode": "^1.90.0"
@@ -24,19 +26,19 @@
         "commands": [
             {
                 "command": "FIM.setApiKey",
-                "title": "DeepSeek FIM: Set API Key"
+                "title": "FIM: Set API Key"
             },
             {
                 "command": "FIM.clearApiKey",
-                "title": "DeepSeek FIM: Clear API Key"
+                "title": "FIM: Clear API Key"
             },
             {
                 "command": "FIM.testRequest",
-                "title": "DeepSeek FIM: Test Request"
+                "title": "FIM: Test Request"
             },
             {
                 "command": "FIM.toggle",
-                "title": "DeepSeek FIM: Toggle Inline Completion"
+                "title": "FIM: Toggle Inline Completion"
             }
         ],
         "configuration": {
@@ -59,7 +61,7 @@
                 "FIM.baseUrl": {
                     "type": "string",
                     "default": "https://api.deepseek.com/beta",
-                    "description": "Base URL for the FIM API. For official DeepSeek FIM use `https://api.deepseek.com/beta`. When using a custom provider, change if needed."
+                    "description": "Base URL for the FIM API. For official FIM use `https://api.deepseek.com/beta`. When using a custom provider, change if needed."
                 },
                 "FIM.completionsPath": {
                     "type": "string",
@@ -69,7 +71,7 @@
                 "FIM.model": {
                     "type": "string",
                     "default": "deepseek-v4-flash",
-                    "description": "Model name sent to the FIM endpoint. Official DeepSeek FIM docs currently list deepseek-v4-flash; custom values are allowed."
+                    "description": "Model name sent to the FIM endpoint. Official FIM docs currently list deepseek-v4-flash; custom values are allowed."
                 },
                 "FIM.apiKeyEnvVar": {
                     "type": "string",
@@ -143,7 +145,7 @@
                 "FIM.logRequests": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Log request metadata to the DeepSeek FIM output channel. Does not log API keys."
+                    "description": "Log request metadata to the FIM output channel. Does not log API keys."
                 }
             }
         }
