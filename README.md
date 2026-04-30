@@ -47,16 +47,23 @@ Example VS Code settings:
   },
   "editor.quickSuggestionsDelay": 200,
 
-  "deepseekFim.enabled": true,
-  "deepseekFim.baseUrl": "https://api.deepseek.com/beta",
-  "deepseekFim.completionsPath": "/completions",
-  "deepseekFim.model": "deepseek-v4-flash",
-  "deepseekFim.maxTokens": 64,
-  "deepseekFim.temperature": 0.0,
-  "deepseekFim.topP": 0.9,
-  "deepseekFim.prefixChars": 1000,
-  "deepseekFim.suffixChars": 1000,
-  "deepseekFim.debounceMs": 72,
+  "FIM.enabled": true,
+  "FIM.baseUrl": "https://api.deepseek.com/beta",
+  "FIM.completionsPath": "/completions",
+  "FIM.model": "deepseek-v4-flash",
+  "FIM.maxTokens": 144,
+  "FIM.temperature": 0.0,
+  "FIM.topP": 0.9,
+  "FIM.prefixChars": 1000,
+  "FIM.suffixChars": 1000,
+  "FIM.debounceMs": 150,
+  "FIM.stop": [
+      "\n\n",
+       "//",
+       "\n  "
+  ], // stop early to save tokens
+  "FIM.withSuffix": true,
+  "FIM.logRequests": true // see timing in Output
 }
 ```
 
