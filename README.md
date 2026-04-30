@@ -14,36 +14,29 @@ This is useful for DeepSeek API. It sends:
 to `https://api.deepseek.com/beta/completions`, and inserts `choices[0].text` as an inline completion.
 
 ## Build
-
 ```bash
 npm install
 npm run compile
 ```
-
-For local development, open this folder in VS Code and press `F5`.
-
-To package a VSIX:
-
+And to package a VSIX:
 ```bash
 npm run package
 code --install-extension deepseek-fim-inline-0.0.1.vsix
 ```
 
 ## Configure
-
 Set your key through the command palette `Ctrl+Shift+P` (recommended, it will not store the key in plaintext):
 ```text
 DeepSeek FIM: Set API Key
 ```
 
-or export it before launching VS Code:
-
+or export it before launching VS Code (discourage)
 ```bash
 export DEEPSEEK_API_KEY="sk-..."
 code .
 ```
 
-Recommended VS Code settings:
+Example VS Code settings:
 ```jsonc
 {
   "editor.inlineSuggest.enabled": true,
