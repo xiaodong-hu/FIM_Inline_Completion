@@ -1,0 +1,162 @@
+{
+    "name": "fim-inline",
+    "displayName": "FIM Inline Completion",
+    "description": "Minimal VS Code inline completion provider for AI FIM /completions API, useful for DeepSeek.",
+    "version": "0.1",
+    "publisher": "xiaodong-hu",
+    "license": "MIT",
+    "engines": {
+        "vscode": "^1.90.0"
+    },
+    "categories": [
+        "Programming Languages",
+        "Machine Learning"
+    ],
+    "activationEvents": [
+        "onStartupFinished",
+        "onCommand:FIM.setApiKey",
+        "onCommand:FIM.clearApiKey",
+        "onCommand:FIM.testRequest",
+        "onCommand:FIM.toggle"
+    ],
+    "main": "./out/extension.js",
+    "contributes": {
+        "commands": [
+            {
+                "command": "FIM.setApiKey",
+                "title": "DeepSeek FIM: Set API Key"
+            },
+            {
+                "command": "FIM.clearApiKey",
+                "title": "DeepSeek FIM: Clear API Key"
+            },
+            {
+                "command": "FIM.testRequest",
+                "title": "DeepSeek FIM: Test Request"
+            },
+            {
+                "command": "FIM.toggle",
+                "title": "DeepSeek FIM: Toggle Inline Completion"
+            }
+        ],
+        "configuration": {
+            "title": "FIM Inline Completion",
+            "properties": {
+                "FIM.enabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable FIM inline completions."
+                },
+                "FIM.provider": {
+                    "type": "string",
+                    "enum": [
+                        "deepseek",
+                        "custom"
+                    ],
+                    "default": "deepseek",
+                    "description": "Provider preset. Use 'deepseek' for the official DeepSeek hosted API; use 'custom' for an OpenAI-compatible FIM endpoint with prompt/suffix fields."
+                },
+                "FIM.baseUrl": {
+                    "type": "string",
+                    "default": "https://api.deepseek.com/beta",
+                    "description": "Base URL for the FIM API. For official DeepSeek FIM use `https://api.deepseek.com/beta`. When using a custom provider, change if needed."
+                },
+                "FIM.completionsPath": {
+                    "type": "string",
+                    "default": "/completions",
+                    "description": "Path appended to `baseUrl` for the completion request."
+                },
+                "FIM.model": {
+                    "type": "string",
+                    "default": "deepseek-v4-flash",
+                    "description": "Model name sent to the FIM endpoint. Official DeepSeek FIM docs currently list deepseek-v4-flash; custom values are allowed."
+                },
+                "FIM.apiKeyEnvVar": {
+                    "type": "string",
+                    "default": "DEEPSEEK_API_KEY",
+                    "description": "Environment variable used as fallback when no API key is stored in VS Code SecretStorage."
+                },
+                "FIM.maxTokens": {
+                    "type": "number",
+                    "default": 64,
+                    "minimum": 1,
+                    "maximum": 4096,
+                    "description": "Maximum generated tokens for each inline completion."
+                },
+                "FIM.temperature": {
+                    "type": "number",
+                    "default": 0.0,
+                    "minimum": 0,
+                    "maximum": 2,
+                    "description": "Sampling temperature."
+                },
+                "FIM.topP": {
+                    "type": "number",
+                    "default": 0.9,
+                    "minimum": 0,
+                    "maximum": 1,
+                    "description": "Nucleus sampling top_p."
+                },
+                "FIM.prefixChars": {
+                    "type": "number",
+                    "default": 12000,
+                    "minimum": 0,
+                    "description": "Maximum number of characters before the cursor sent as prefix."
+                },
+                "FIM.suffixChars": {
+                    "type": "number",
+                    "default": 8000,
+                    "minimum": 0,
+                    "description": "Maximum number of characters after the cursor sent as suffix. Always included, possibly as an empty string at EOF."
+                },
+                "FIM.withSuffix": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Send suffix text after the cursor. Turn off for APIs that do not support a suffix field."
+                },
+                "FIM.minPrefixChars": {
+                    "type": "number",
+                    "default": 4,
+                    "minimum": 0,
+                    "description": "Do not request completions until at least this many non-whitespace prefix characters exist before the cursor."
+                },
+                "FIM.requestTimeoutMs": {
+                    "type": "number",
+                    "default": 6000,
+                    "minimum": 100,
+                    "description": "HTTP request timeout in milliseconds."
+                },
+                "FIM.debounceMs": {
+                    "type": "number",
+                    "default": 200,
+                    "minimum": 0,
+                    "description": "Delay before making the request. VS Code usually cancels older requests while typing."
+                },
+                "FIM.stop": {
+                    "type": "array",
+                    "default": [],
+                    "items": {
+                        "type": "string"
+                    },
+                    "description": "Optional stop strings sent to the completion endpoint."
+                },
+                "FIM.logRequests": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Log request metadata to the DeepSeek FIM output channel. Does not log API keys."
+                }
+            }
+        }
+    },
+    "scripts": {
+        "compile": "tsc -p ./",
+        "watch": "tsc -watch -p ./",
+        "package": "vsce package"
+    },
+    "devDependencies": {
+        "@types/node": "^20.17.0",
+        "@types/vscode": "^1.90.0",
+        "@vscode/vsce": "^3.2.1",
+        "typescript": "^5.6.3"
+    }
+}
