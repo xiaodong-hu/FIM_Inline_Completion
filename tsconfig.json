@@ -1,0 +1,31 @@
+{
+    "compilerOptions": {
+        /* Most modern target defaults to es2025 in TS 6.0+ */
+        "target": "ESNext",
+        /* Module system for modern Node.js or Bundlers */
+        "module": "NodeNext",
+        "moduleResolution": "NodeNext",
+        "lib": [
+            "ESNext",
+            "DOM"
+        ],
+        /* Essential Performance Settings */
+        "incremental": true, // Faster rebuilds by caching
+        "skipLibCheck": true, // Skip type checking of declaration files
+        "isolatedModules": true, // Faster transpilation (compatibility with esbuild/swc)
+        "verbatimModuleSyntax": true, // Better ESM performance and clarity
+        /* Stricter Typing for Modern Standards */
+        "strict": true,
+        "noUncheckedIndexedAccess": true, // Best practice for preventing undefined errors
+        "exactOptionalPropertyTypes": true, // Precise optional property handling
+        /* Standard Emit Options */
+        "outDir": "out",
+        "rootDir": "src",
+        "sourceMap": true,
+        "forceConsistentCasingInFileNames": true
+    },
+    "exclude": [
+        "node_modules",
+        ".vscode-test"
+    ]
+}
