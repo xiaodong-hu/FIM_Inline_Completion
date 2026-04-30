@@ -18,11 +18,11 @@ to `https://api.deepseek.com/beta/completions`, and inserts `choices[0].text` as
 npm install
 npm run compile
 ```
-And to package a VSIX:
+And to package a VSIX, run 
 ```bash
 npm run package
-code --install-extension deepseek-fim-inline-0.0.1.vsix
 ```
+and install from vscode yourself.
 
 ## Configure
 Set your key through the command palette `Ctrl+Shift+P` (recommended, it will not store the key in plaintext):
