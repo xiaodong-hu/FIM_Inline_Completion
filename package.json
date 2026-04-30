@@ -146,6 +146,25 @@
                     "type": "boolean",
                     "default": false,
                     "description": "Log request metadata to the FIM output channel. Does not log API keys."
+                },
+                "FIM.streamEnabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable progressive streaming: show completions as soon as the first chunk of tokens arrives, then continue fetching more in the background for the next keystroke."
+                },
+                "FIM.streamTokens": {
+                    "type": "number",
+                    "default": 5,
+                    "minimum": 1,
+                    "maximum": 64,
+                    "description": "How many tokens to collect before showing the first inline completion chunk. Lower values make completions appear faster. The rest of the stream is cached for the next keystroke."
+                },
+                "FIM.streamCacheTtlMs": {
+                    "type": "number",
+                    "default": 30000,
+                    "minimum": 1000,
+                    "maximum": 120000,
+                    "description": "How long (in ms) to keep cached stream continuations. When you type again within this window, the next tokens are served from cache without an API call."
                 }
             }
         }
