@@ -57,16 +57,12 @@ Example VS Code settings:
   "FIM.prefixChars": 12000,
   "FIM.suffixChars": 8000,
   "FIM.debounceMs": 150,
-  "FIM.stop": [
-      "\n\n",
-      "//"
-  ], // optional: stop early to save tokens (see note below)
+  "FIM.stop": [], // optional: stop early to save tokens (see note below)
   "FIM.withSuffix": true,
   "FIM.logRequests": true, // see timing in Output
 
-  // ── Streaming (smooth token-by-token UX) ──
   "FIM.streamEnabled": true,
-  "FIM.streamTokens": 5,
+  "FIM.streamTokens": 12, // how many tokens to wait for before showing the first chunk
   "FIM.streamCacheTtlMs": 30000
 }
 ```
@@ -80,7 +76,7 @@ as soon as a few tokens arrive:
 | Setting | Default | Description |
 |---|---|---|
 | `FIM.streamEnabled` | `true` | Enable progressive streaming. When on, the extension returns after ~`streamTokens` tokens and continues reading the rest in the background. |
-| `FIM.streamTokens` | `5` | How many tokens to collect before showing the first chunk. Lower = faster first display, shorter initial suggestion. |
+| `FIM.streamTokens` | `12` | How many tokens to collect before showing the first chunk. Lower = faster first display, shorter initial suggestion. |
 | `FIM.streamCacheTtlMs` | `30000` | How long (in ms) to keep cached stream continuations. On the next keystroke the extension serves the next chunk from cache — **no API call needed**. |
 
 ### How it works
