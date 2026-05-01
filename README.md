@@ -57,14 +57,10 @@ Example VS Code settings:
   "FIM.prefixChars": 12000,
   "FIM.suffixChars": 8000,
   "FIM.debounceMs": 150,
-  "FIM.stop": [
-      "\n\n",
-      "//"
-  ], // optional: stop early to save tokens (see note below)
+  "FIM.stop": [], // optional: stop early to save tokens (see note below)
   "FIM.withSuffix": true,
   "FIM.logRequests": true, // see timing in Output
 
-  // ── Streaming (smooth token-by-token UX) ──
   "FIM.streamEnabled": true,
   "FIM.streamTokens": 12, // how many tokens to wait for before showing the first chunk
   "FIM.streamCacheTtlMs": 30000
