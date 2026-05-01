@@ -59,9 +59,8 @@ Example VS Code settings:
   "FIM.debounceMs": 150,
   "FIM.stop": [
       "\n\n",
-       "//",
-       "\n  "
-  ], // stop early to save tokens
+      "//"
+  ], // optional: stop early to save tokens (see note below)
   "FIM.withSuffix": true,
   "FIM.logRequests": true, // see timing in Output
 
@@ -107,3 +106,10 @@ To disable streaming and fall back to the original behaviour (wait for the
 full response), set `"FIM.streamEnabled": false`.
 
 Note: please disable other inline providers for best experience
+
+> **⚠️ Caution on `FIM.stop`:** Avoid patterns that match common code
+> structure. In particular **do not** use `"\\n  "` (newline + two spaces) —
+> it matches the start of *every* indented line and will truncate multi-line
+> completions. Stick to patterns that are unambiguous end-of-completion
+> signals like `"\\n\\n"` (blank line) or comment prefixes. When in doubt,
+> leave `FIM.stop` as `[]`.

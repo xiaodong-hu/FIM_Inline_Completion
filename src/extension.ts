@@ -384,6 +384,7 @@ async function requestFimStream(
             ) {
                 earlyResolved = true;
                 const cleaned = cleanupCompletion(entry.fullText);
+                entry.fullText = cleaned;        // keep cache consistent with returnedChars
                 entry.returnedChars = cleaned.length;
 
                 // Return the first chunk NOW. The rest continues in background.
