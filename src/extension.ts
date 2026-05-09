@@ -545,7 +545,11 @@ function buildProvider(context: vscode.ExtensionContext): vscode.InlineCompletio
                 return undefined;
             }
 
-            if (document.uri.scheme !== 'file' && document.uri.scheme !== 'untitled') {
+            if (
+                document.uri.scheme !== 'file' &&
+                document.uri.scheme !== 'untitled' &&
+                document.uri.scheme !== 'vscode-notebook-cell'
+            ) {
                 return undefined;
             }
 
@@ -733,6 +737,7 @@ export function activate(context: vscode.ExtensionContext): void {
             [
                 { scheme: 'file', pattern: '**' },
                 { scheme: 'untitled', pattern: '**' },
+                { scheme: 'vscode-notebook-cell', pattern: '**' },
             ],
             provider,
         ),
