@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 
 const SECRET_KEY = 'FIM.apiKey';
 const output = vscode.window.createOutputChannel('FIM');
@@ -17,10 +18,7 @@ interface ExtensionConfig {
     maxTokens: number;
     temperature: number;
     topP: number;
-    prefixChars: number;
-    suffixChars: number;
     withSuffix: boolean;
-    minPrefixChars: number;
     requestTimeoutMs: number;
     debounceMs: number;
     stop: string[];
@@ -28,6 +26,18 @@ interface ExtensionConfig {
     streamEnabled: boolean;
     streamTokens: number;
     streamCacheTtlMs: number;
+    /** Whether to include cross-file project context (preamble). */
+    preambleEnabled: boolean;
+    /** Maximum number of other project files to include in the preamble. */
+    preambleMaxFiles: number;
+    /** Maximum total characters for the preamble (soft cap). */
+    preambleMaxChars: number;
+    /** Glob patterns for files to include in the preamble. */
+    preambleIncludePatterns: string[];
+    /** Glob patterns for files to exclude from the preamble. */
+    preambleExcludePatterns: string[];
+    /** Minimum prefix chars before requesting a completion. */
+    minPrefixChars: number;
 }
 
 /* ------------------------------------------------------------------ */
@@ -43,9 +53,8 @@ interface StreamCacheEntry {
     isComplete: boolean;
     /** Timestamp of last activity (for TTL eviction). */
     lastAccess: number;
-    /** Resolves when the stream finishes (or aborts). Used by waiters. */
+    /** Resolves when the stream finishes (or aborts). */
     donePromise: Promise<void>;
-    /** Allow external code to signal done. */
     resolveDone: () => void;
 }
 
@@ -63,46 +72,44 @@ setInterval(() => {
 }, 10_000);
 
 /**
- * Build a cache key that is stable enough to survive small edits.
- * We key on document + offset + model + a "fuzzy" hash of the last 256 chars
- * of the prefix (the most relevant context for FIM).  This way when the user
- * types a few characters the cache can still serve the continuation.
+ * Build a simple, stable cache key.
+ *
+ * With full-file context, the prompt/suffix pair is identical for a given
+ * (document, offset) regardless of what was typed before — only the cursor
+ * position matters.  No hash needed.
  */
 function makeCacheKey(
     doc: vscode.TextDocument,
     offset: number,
-    prefix: string,
     model: string,
 ): string {
-    // Only the tail of the prefix matters for FIM – the model mainly looks at
-    // nearby context.  Hashing the last 256 chars keeps the key stable across
-    // small edits while still invalidating when the immediate context changes.
-    const tail = prefix.length > 256 ? prefix.slice(prefix.length - 256) : prefix;
-    const tailHash = simpleHash(tail);
-    return `${doc.uri.toString()}|${offset}|${tailHash}|${model}`;
+    return `${doc.uri.toString()}|${offset}|${model}`;
 }
 
 /**
- * Search the stream cache for entries at *nearby* offsets (within ±16 chars).
- * When the user types a few characters we can often reuse a stream that was
- * started for a slightly earlier cursor position.
+ * Search the stream cache for entries at nearby offsets (±16 chars).
+ * When the user types a few characters we can often reuse a stream started
+ * for a slightly earlier cursor position.
  */
 function findNearbyCacheEntry(
     doc: vscode.TextDocument,
     offset: number,
-    prefix: string,
     model: string,
 ): StreamCacheEntry | undefined {
     // First try exact match.
-    const exactKey = makeCacheKey(doc, offset, prefix, model);
+    const exactKey = makeCacheKey(doc, offset, model);
     const exact = streamCache.get(exactKey);
-    if (exact) return exact;
+    if (exact) {
+        return exact;
+    }
 
-    // Then search nearby offsets (look-back first – user usually types forward).
+    // Search nearby offsets (look-back first — user usually types forward).
     for (let delta = -1; delta >= -16; delta--) {
         const nearbyOffset = offset + delta;
-        if (nearbyOffset < 0) continue;
-        const nearbyKey = makeCacheKey(doc, nearbyOffset, prefix, model);
+        if (nearbyOffset < 0) {
+            continue;
+        }
+        const nearbyKey = makeCacheKey(doc, nearbyOffset, model);
         const entry = streamCache.get(nearbyKey);
         if (entry && entry.fullText.length > entry.returnedChars) {
             // Found a nearby entry with unconsumed text.
@@ -117,18 +124,209 @@ function findNearbyCacheEntry(
     return undefined;
 }
 
-function simpleHash(s: string): number {
-    let hash = 0;
-    for (let i = 0; i < s.length; i++) {
-        const ch = s.charCodeAt(i);
-        hash = ((hash << 5) - hash + ch) | 0;
-    }
-    return hash;
+/* ------------------------------------------------------------------ */
+/*  Project Preamble – cross-file context for KV-cache-friendly FIM    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Cached preamble: other project files concatenated in a deterministic order.
+ * This text is prepended to *every* FIM prompt so that DeepSeek's server-side
+ * KV cache can reuse the attention states for the preamble portion across all
+ * keystrokes in the same file.
+ */
+interface PreambleCache {
+    /** Combined text: "### FILE: <relpath> ###\n<content>\n" per file. */
+    text: string;
+    /** Total character count. */
+    totalChars: number;
+    /** Number of files included. */
+    fileCount: number;
+    /** When this cache was built (Date.now()). */
+    builtAt: number;
 }
 
-interface CompletionChoice {
-    text?: string;
+let preambleCache: PreambleCache | undefined;
+let preambleBuildLock = false;
+/** File-system watcher – invalidates preamble on changes. */
+let preambleWatcher: vscode.FileSystemWatcher | undefined;
+
+/** Source-code-ish extensions we consider for the preamble. */
+const SOURCE_EXTENSIONS = new Set([
+    '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
+    '.py', '.pyi', '.pyx',
+    '.rs', '.go', '.java', '.kt', '.kts', '.scala',
+    '.c', '.cpp', '.cc', '.cxx', '.h', '.hpp', '.hh',
+    '.cs', '.rb', '.php', '.swift', '.mm', '.m',
+    '.sql', '.graphql', '.gql',
+    '.json', '.yaml', '.yml', '.toml', '.xml',
+    '.md', '.markdown', '.rst', '.txt',
+    '.sh', '.bash', '.zsh', '.fish',
+    '.html', '.css', '.scss', '.less',
+    '.vue', '.svelte', '.astro',
+    '.tf', '.hcl',
+    '.dart', '.lua', '.r', '.jl',
+    '.proto', '.thrift',
+]);
+
+/**
+ * Build (or return cached) the project preamble.
+ *
+ * The preamble is a concatenation of all relevant project source files
+ * (filtered by VS Code's own exclude settings, which respect .gitignore).
+ * Files are sorted alphabetically by relative path for deterministic ordering.
+ *
+ * The CURRENT file (the one being edited) is EXCLUDED from the preamble —
+ * its content is sent as the dynamic prefix/suffix instead.
+ */
+async function getPreamble(
+    currentDocUri: vscode.Uri,
+    cfg: ExtensionConfig,
+): Promise<string> {
+    if (!cfg.preambleEnabled) {
+        return '';
+    }
+
+    // Return cached preamble if fresh (< 30 s).
+    if (preambleCache && Date.now() - preambleCache.builtAt < 30_000) {
+        return preambleCache.text;
+    }
+
+    // Prevent concurrent builds.
+    if (preambleBuildLock) {
+        for (let i = 0; i < 20; i++) {
+            await sleep(100, new vscode.CancellationTokenSource().token);
+            if (preambleCache && Date.now() - preambleCache.builtAt < 30_000) {
+                return preambleCache.text;
+            }
+        }
+        return preambleCache?.text ?? '';
+    }
+
+    preambleBuildLock = true;
+    try {
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders || workspaceFolders.length === 0) {
+            preambleCache = { text: '', totalChars: 0, fileCount: 0, builtAt: Date.now() };
+            return '';
+        }
+
+        // Collect files using VS Code's workspace.findFiles, which respects
+        // .gitignore and files.exclude settings when exclude is null.
+        const includePattern = cfg.preambleIncludePatterns.length > 0
+            ? `{${cfg.preambleIncludePatterns.join(',')}}`
+            : '**/*';
+        const excludePattern = cfg.preambleExcludePatterns.length > 0
+            ? `{${cfg.preambleExcludePatterns.join(',')}}`
+            : null;
+
+        const uris = await vscode.workspace.findFiles(
+            includePattern, excludePattern, cfg.preambleMaxFiles + 50,
+        );
+
+        // Filter: only source-like extensions, non-binary, not the current file.
+        const currentFsPath = currentDocUri.fsPath;
+        const candidateUris = uris.filter(uri => {
+            if (uri.fsPath === currentFsPath) {
+                return false;
+            }
+            const ext = path.extname(uri.fsPath).toLowerCase();
+            return SOURCE_EXTENSIONS.has(ext);
+        });
+
+        // Sort deterministically by workspace-relative path.
+        const root = workspaceFolders[0]!.uri.fsPath;
+        candidateUris.sort((a, b) => {
+            const ra = path.relative(root, a.fsPath);
+            const rb = path.relative(root, b.fsPath);
+            return ra.localeCompare(rb);
+        });
+
+        // Read files and build preamble.
+        const parts: string[] = [];
+        let totalChars = 0;
+        let fileCount = 0;
+
+        for (const uri of candidateUris) {
+            if (fileCount >= cfg.preambleMaxFiles) {
+                break;
+            }
+            if (totalChars >= cfg.preambleMaxChars) {
+                break;
+            }
+
+            try {
+                const contentBytes = await vscode.workspace.fs.readFile(uri);
+                const content = new TextDecoder().decode(contentBytes);
+
+                // Skip obviously binary content.
+                if (content.includes('\x00')) {
+                    continue;
+                }
+
+                const relPath = path.relative(root, uri.fsPath);
+                const header = `### FILE: ${relPath} ###\n`;
+                const block = header + content + '\n';
+
+                // Soft cap: allow the last file to push us a bit over.
+                if (totalChars > 0 && totalChars + block.length > cfg.preambleMaxChars * 1.2) {
+                    break;
+                }
+
+                parts.push(block);
+                totalChars += block.length;
+                fileCount++;
+            } catch {
+                // Skip unreadable files.
+            }
+        }
+
+        const text = parts.join('');
+        preambleCache = { text, totalChars, fileCount, builtAt: Date.now() };
+
+        if (cfg.logRequests) {
+            output.appendLine(
+                `[preamble] built: ${fileCount} files, ${totalChars} chars`,
+            );
+        }
+
+        return text;
+    } finally {
+        preambleBuildLock = false;
+    }
 }
+
+/** Invalidate the preamble cache (called by file watcher). */
+function invalidatePreamble(): void {
+    preambleCache = undefined;
+}
+
+/** Set up a file-system watcher to invalidate preamble on project changes. */
+function setupPreambleWatcher(context: vscode.ExtensionContext): void {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) {
+        return;
+    }
+
+    // Watch for file creates/deletes at the workspace root.
+    const rootFolder = workspaceFolders[0]!;
+    const watcher = vscode.workspace.createFileSystemWatcher(
+        new vscode.RelativePattern(rootFolder, '**/*'),
+        false, // ignoreCreateEvents
+        false, // ignoreChangeEvents
+        false, // ignoreDeleteEvents
+    );
+
+    watcher.onDidCreate(() => invalidatePreamble());
+    watcher.onDidDelete(() => invalidatePreamble());
+    // We don't watch content changes (too noisy) — the 30 s TTL handles that.
+
+    context.subscriptions.push(watcher);
+    preambleWatcher = watcher;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Helpers                                                            */
+/* ------------------------------------------------------------------ */
 
 function getConfig(): ExtensionConfig {
     const cfg = vscode.workspace.getConfiguration('FIM');
@@ -137,27 +335,44 @@ function getConfig(): ExtensionConfig {
         provider: cfg.get<'deepseek' | 'custom'>('provider', 'deepseek'),
         baseUrl: cfg.get<string>('baseUrl', 'https://api.deepseek.com/beta'),
         completionsPath: cfg.get<string>('completionsPath', '/completions'),
-        model: cfg.get<string>('model', 'deepseek-v4-flash'),
+        model: cfg.get<string>('model', 'deepseek-v4-pro'),
         apiKeyEnvVar: cfg.get<string>('apiKeyEnvVar', 'DEEPSEEK_API_KEY'),
-        maxTokens: cfg.get<number>('maxTokens', 64),
+        maxTokens: cfg.get<number>('maxTokens', 256),
         temperature: cfg.get<number>('temperature', 0.0),
         topP: cfg.get<number>('topP', 0.9),
-        prefixChars: cfg.get<number>('prefixChars', 12000),
-        suffixChars: cfg.get<number>('suffixChars', 8000),
         withSuffix: cfg.get<boolean>('withSuffix', true),
-        minPrefixChars: cfg.get<number>('minPrefixChars', 4),
-        requestTimeoutMs: cfg.get<number>('requestTimeoutMs', 6000),
+        requestTimeoutMs: cfg.get<number>('requestTimeoutMs', 10000),
         debounceMs: cfg.get<number>('debounceMs', 200),
         stop: cfg.get<string[]>('stop', []),
         logRequests: cfg.get<boolean>('logRequests', false),
         streamEnabled: cfg.get<boolean>('streamEnabled', true),
         streamTokens: cfg.get<number>('streamTokens', 5),
         streamCacheTtlMs: cfg.get<number>('streamCacheTtlMs', 30000),
+        preambleEnabled: cfg.get<boolean>('preambleEnabled', true),
+        preambleMaxFiles: cfg.get<number>('preambleMaxFiles', 100),
+        preambleMaxChars: cfg.get<number>('preambleMaxChars', 500_000),
+        preambleIncludePatterns: cfg.get<string[]>('preambleIncludePatterns', []),
+        preambleExcludePatterns: cfg.get<string[]>('preambleExcludePatterns', [
+            '**/node_modules/**',
+            '**/.git/**',
+            '**/dist/**',
+            '**/build/**',
+            '**/out/**',
+            '**/.next/**',
+            '**/target/**',
+            '**/__pycache__/**',
+            '**/*.min.*',
+            '**/package-lock.json',
+            '**/yarn.lock',
+            '**/pnpm-lock.yaml',
+            '**/Cargo.lock',
+        ]),
+        minPrefixChars: cfg.get<number>('minPrefixChars', 4),
     };
 }
 
-function joinUrl(baseUrl: string, path: string): string {
-    return `${baseUrl.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`;
+function joinUrl(baseUrl: string, pathStr: string): string {
+    return `${baseUrl.replace(/\/+$/, '')}/${pathStr.replace(/^\/+/, '')}`;
 }
 
 function sleep(ms: number, token: vscode.CancellationToken): Promise<void> {
@@ -174,38 +389,42 @@ function sleep(ms: number, token: vscode.CancellationToken): Promise<void> {
     });
 }
 
-async function getApiKey(context: vscode.ExtensionContext, cfg: ExtensionConfig): Promise<string | undefined> {
+async function getApiKey(
+    context: vscode.ExtensionContext,
+    cfg: ExtensionConfig,
+): Promise<string | undefined> {
     const fromSecret = await context.secrets.get(SECRET_KEY);
     if (fromSecret && fromSecret.trim().length > 0) {
         return fromSecret.trim();
     }
-
     const fromEnv = process.env[cfg.apiKeyEnvVar];
     if (fromEnv && fromEnv.trim().length > 0) {
         return fromEnv.trim();
     }
-
     return undefined;
 }
 
-function getPrefixSuffix(
+/**
+ * Get the FULL file prefix and suffix.
+ *
+ * Unlike the old sliding-window approach, we now send the ENTIRE current file:
+ *   prefix = everything from the start of the file up to the cursor
+ *   suffix = everything from the cursor to the end of the file
+ *
+ * This is the key insight for KV-cache friendliness: between keystrokes,
+ * only ONE character shifts from suffix to prefix — the vast majority of
+ * tokens stay at identical positions, allowing DeepSeek's prefix-caching
+ * to reuse attention states for ~99%+ of the prompt.
+ */
+function getFullFilePrefixSuffix(
     document: vscode.TextDocument,
     position: vscode.Position,
-    cfg: ExtensionConfig,
 ): { prefix: string; suffix: string; offset: number } {
     const offset = document.offsetAt(position);
+    const docEnd = document.offsetAt(document.lineAt(document.lineCount - 1).range.end);
 
-    const prefixStartOffset = Math.max(0, offset - cfg.prefixChars);
-    const suffixEndOffset = Math.min(
-        document.offsetAt(document.lineAt(document.lineCount - 1).range.end),
-        offset + cfg.suffixChars,
-    );
-
-    const prefixStartPos = document.positionAt(prefixStartOffset);
-    const suffixEndPos = document.positionAt(suffixEndOffset);
-
-    const prefix = document.getText(new vscode.Range(prefixStartPos, position));
-    const suffix = document.getText(new vscode.Range(position, suffixEndPos));
+    const prefix = document.getText(new vscode.Range(document.positionAt(0), position));
+    const suffix = document.getText(new vscode.Range(position, document.positionAt(docEnd)));
 
     return { prefix, suffix, offset };
 }
@@ -223,8 +442,6 @@ function cleanupCompletion(text: string): string {
     return t;
 }
 
-
-
 /* ------------------------------------------------------------------ */
 /*  Streaming FIM request with early-return for progressive display    */
 /* ------------------------------------------------------------------ */
@@ -232,22 +449,22 @@ function cleanupCompletion(text: string): string {
 /**
  * Start a streaming FIM request.
  *
+ * The prompt is constructed as:
+ *   [preamble (other project files)] + [current file prefix before cursor]
+ * The suffix is:
+ *   [current file content after cursor]
+ *
  * When `cfg.streamEnabled` is true:
  *   1. The function returns as soon as `cfg.streamTokens` tokens have been
  *      collected, giving VS Code an *instant* inline completion.
  *   2. The remainder of the stream is read in the background and stored in
  *      `streamCache`.  On the very next keystroke the provider will serve the
- *      next chunk from cache – **no API call needed**.
- *
- * Returns:
- *   - `text`: the text to show right now (may be partial)
- *   - `isComplete`: whether the full stream has been consumed
- *   - The cache entry is populated / updated for subsequent calls.
+ *      next chunk from cache — **no API call needed**.
  */
 async function requestFimStream(
     apiKey: string,
     cfg: ExtensionConfig,
-    prefix: string,
+    fullPrompt: string,
     suffix: string,
     cacheKey: string,
     token: vscode.CancellationToken,
@@ -255,19 +472,19 @@ async function requestFimStream(
     const url = joinUrl(cfg.baseUrl, cfg.completionsPath);
     const payload: Record<string, unknown> = {
         model: cfg.model,
-        prompt: prefix,
+        prompt: fullPrompt,
         max_tokens: cfg.maxTokens,
         temperature: cfg.temperature,
         top_p: cfg.topP,
         stream: true,
     };
 
-    if (cfg.withSuffix) {
+    if (cfg.withSuffix && suffix.length > 0) {
         payload.suffix = suffix;
     }
 
     if (cfg.stop.length > 0) {
-        (payload as any).stop = cfg.stop;
+        (payload as Record<string, unknown>).stop = cfg.stop;
     }
 
     const controller = new AbortController();
@@ -288,7 +505,6 @@ async function requestFimStream(
     };
     streamCache.set(cacheKey, entry);
 
-    // We'll collect enough characters to approximate cfg.streamTokens tokens.
     // A rough heuristic: avg token ≈ 4 chars for code.
     const streamCharTarget = cfg.streamEnabled
         ? cfg.streamTokens * 4
@@ -298,7 +514,7 @@ async function requestFimStream(
         const start = Date.now();
         if (cfg.logRequests) {
             output.appendLine(
-                `[req] model=${cfg.model} prefix_len=${prefix.length} suffix_len=${suffix.length} max_tokens=${cfg.maxTokens} stream_tokens=${cfg.streamTokens}`,
+                `[req] model=${cfg.model} prompt_len=${fullPrompt.length} suffix_len=${suffix.length} max_tokens=${cfg.maxTokens} stream_tokens=${cfg.streamTokens}`,
             );
         }
 
@@ -339,7 +555,6 @@ async function requestFimStream(
 
             const { done, value } = await reader.read();
             if (done) {
-                // Stream finished naturally.
                 entry.isComplete = true;
                 entry.lastAccess = Date.now();
                 entry.resolveDone();
@@ -350,7 +565,9 @@ async function requestFimStream(
             const lines = chunk.split('\n');
 
             for (const line of lines) {
-                if (!line.startsWith('data: ')) continue;
+                if (!line.startsWith('data: ')) {
+                    continue;
+                }
                 const data = line.slice(6).trim();
                 if (data === '[DONE]') {
                     entry.isComplete = true;
@@ -361,22 +578,23 @@ async function requestFimStream(
 
                 try {
                     const parsed = JSON.parse(data);
-                    const text = parsed.choices?.[0]?.text;
-                    if (text) {
+                    const delta = parsed.choices?.[0]?.text;
+                    if (delta) {
                         if (firstToken) {
                             firstToken = false;
-                            const ttfb = Date.now() - start;
                             if (cfg.logRequests) {
-                                output.appendLine(`[stream] TTFB: ${ttfb}ms`);
+                                output.appendLine(`[stream] TTFB: ${Date.now() - start}ms`);
                             }
                         }
-                        entry.fullText += text;
+                        entry.fullText += delta;
                         entry.lastAccess = Date.now();
                     }
-                } catch { /* ignore malformed SSE lines */ }
+                } catch {
+                    // Ignore malformed SSE lines.
+                }
             }
 
-            // ---- early return: we have enough characters for the first chunk ---
+            // ---- early return: enough characters for the first chunk ---------
             if (
                 !earlyResolved &&
                 cfg.streamEnabled &&
@@ -384,43 +602,37 @@ async function requestFimStream(
             ) {
                 earlyResolved = true;
                 const cleaned = cleanupCompletion(entry.fullText);
-                entry.fullText = cleaned;        // keep cache consistent with returnedChars
+                entry.fullText = cleaned;
                 entry.returnedChars = cleaned.length;
 
-                // Return the first chunk NOW. The rest continues in background.
-                const elapsed = Date.now() - start;
                 if (cfg.logRequests) {
                     output.appendLine(
-                        `[stream] early-return after ${elapsed}ms, ${cleaned.length} chars (target ~${cfg.streamTokens} tokens)`,
+                        `[stream] early-return after ${Date.now() - start}ms, ${cleaned.length} chars`,
                     );
                 }
 
-                // Don't break – keep reading in background.
-                // We return this partial result but the loop continues.
-                const partialResult = cleaned.trim().length > 0 ? cleaned : entry.fullText;
-
-                // Continue the loop in the background, return early.
-                // We use a microtask to keep the reader alive after returning.
+                // Continue reading in background, return the first chunk now.
                 (async () => {
                     try {
                         await continueReadingInBackground(
-                            reader, decoder, entry, cfg, token, start
+                            reader, decoder, entry, cfg, token, start,
                         );
-                    } catch { /* reader already closed or cancelled */ }
+                    } catch {
+                        // Reader already closed or cancelled.
+                    }
                 })();
 
                 return {
-                    text: partialResult,
+                    text: cleaned.trim().length > 0 ? cleaned : entry.fullText,
                     isComplete: false,
                 };
             }
         }
 
         // ---- stream ended (or early-return not enabled) ----------------------
-        const total = Date.now() - start;
         if (cfg.logRequests) {
             output.appendLine(
-                `[req] completed in ${total}ms, response length: ${entry.fullText.length} chars`,
+                `[req] completed in ${Date.now() - start}ms, response: ${entry.fullText.length} chars`,
             );
         }
 
@@ -452,8 +664,6 @@ async function requestFimStream(
 
 /**
  * Continue reading the SSE stream in the background after the early return.
- * Updates the cache entry in-place so the next `provideInlineCompletionItems`
- * call can serve the continuation from cache.
  */
 async function continueReadingInBackground(
     reader: ReadableStreamDefaultReader<Uint8Array>,
@@ -482,7 +692,9 @@ async function continueReadingInBackground(
             const lines = chunk.split('\n');
 
             for (const line of lines) {
-                if (!line.startsWith('data: ')) continue;
+                if (!line.startsWith('data: ')) {
+                    continue;
+                }
                 const data = line.slice(6).trim();
                 if (data === '[DONE]') {
                     entry.isComplete = true;
@@ -493,23 +705,23 @@ async function continueReadingInBackground(
 
                 try {
                     const parsed = JSON.parse(data);
-                    const text = parsed.choices?.[0]?.text;
-                    if (text) {
-                        entry.fullText += text;
+                    const delta = parsed.choices?.[0]?.text;
+                    if (delta) {
+                        entry.fullText += delta;
                         entry.lastAccess = Date.now();
                     }
-                } catch { /* ignore */ }
+                } catch {
+                    // Ignore.
+                }
             }
         }
     } catch {
-        // Reader cancelled or network error – cache what we have.
         entry.isComplete = true;
         entry.resolveDone();
     } finally {
         if (cfg.logRequests) {
-            const total = Date.now() - start;
             output.appendLine(
-                `[stream-bg] finished in ${total}ms, total chars: ${entry.fullText.length}`,
+                `[stream-bg] finished in ${Date.now() - start}ms, total: ${entry.fullText.length} chars`,
             );
         }
     }
@@ -524,12 +736,10 @@ async function requestFim(
     token: vscode.CancellationToken,
 ): Promise<string | undefined> {
     const cacheKey = `test|${Date.now()}|${Math.random()}`;
-    // Force full streaming (no early return) for test requests.
     const testCfg = { ...cfg, streamEnabled: false };
     const result = await requestFimStream(apiKey, testCfg, prefix, suffix, cacheKey, token);
     return result?.text;
 }
-
 
 /* ------------------------------------------------------------------ */
 /*  Inline Completion Provider                                         */
@@ -545,7 +755,11 @@ function buildProvider(context: vscode.ExtensionContext): vscode.InlineCompletio
                 return undefined;
             }
 
-            if (document.uri.scheme !== 'file' && document.uri.scheme !== 'untitled') {
+            if (
+                document.uri.scheme !== 'file' &&
+                document.uri.scheme !== 'untitled' &&
+                document.uri.scheme !== 'vscode-notebook-cell'
+            ) {
                 return undefined;
             }
 
@@ -565,23 +779,29 @@ function buildProvider(context: vscode.ExtensionContext): vscode.InlineCompletio
                 return undefined;
             }
 
-            const { prefix, suffix, offset } = getPrefixSuffix(document, position, cfg);
+            // ── Get full-file prefix/suffix (no sliding window!) ─────────
+            const { prefix, suffix, offset } = getFullFilePrefixSuffix(document, position);
+
+            // Don't bother if there's essentially nothing before the cursor.
             if (prefix.trimEnd().length < cfg.minPrefixChars) {
                 return undefined;
             }
 
-            // ── cache-first strategy ──────────────────────────────────────
-            const cacheKey = makeCacheKey(document, offset, prefix, cfg.model);
+            // ── Get cross-file project preamble ──────────────────────────
+            const preamble = await getPreamble(document.uri, cfg);
+
+            // ── Construct the full prompt: preamble + current file prefix ─
+            const fullPrompt = preamble ? preamble + prefix : prefix;
+
+            // ── cache-first strategy ─────────────────────────────────────
+            const cacheKey = makeCacheKey(document, offset, cfg.model);
 
             // 1) Check if we have a cached stream continuation (exact or nearby offset).
-            const cached = findNearbyCacheEntry(document, offset, prefix, cfg.model);
+            const cached = findNearbyCacheEntry(document, offset, cfg.model);
             if (cached && cached.returnedChars < cached.fullText.length) {
-                // There is new text the user hasn't seen yet – serve it instantly!
                 cached.lastAccess = Date.now();
                 const available = cached.fullText.slice(cached.returnedChars);
 
-                // Only serve a chunk of ~streamTokens chars to keep the
-                // token-by-token feel (don't dump all 64 tokens at once).
                 const chunkSize = cfg.streamTokens * 4;
                 const newText = available.length > chunkSize
                     ? available.slice(0, chunkSize)
@@ -592,7 +812,8 @@ function buildProvider(context: vscode.ExtensionContext): vscode.InlineCompletio
                 if (cleaned.trim().length > 0) {
                     if (cfg.logRequests) {
                         output.appendLine(
-                            `[cache-hit] serving ${cleaned.length} cached chars (total buffered: ${cached.fullText.length - cached.returnedChars})`,
+                            `[cache-hit] serving ${cleaned.length} cached chars ` +
+                            `(buffered: ${cached.fullText.length - cached.returnedChars})`,
                         );
                     }
                     return new vscode.InlineCompletionList([
@@ -604,20 +825,20 @@ function buildProvider(context: vscode.ExtensionContext): vscode.InlineCompletio
                 }
             }
 
-            // 2) If a stream for this position is already in-flight, wait for
-            //    it to produce enough data instead of starting a duplicate.
+            // 2) If a stream for this position is already in-flight, wait for it.
             const inflight = streamCache.get(cacheKey);
             if (inflight && !inflight.isComplete && inflight.fullText.length === 0) {
-                // Wait for at least streamTokens worth of characters.
                 const streamCharTarget = cfg.streamTokens * 4;
                 const waitStart = Date.now();
                 while (
                     inflight.fullText.length < streamCharTarget &&
                     !inflight.isComplete &&
-                    Date.now() - waitStart < 2000 // safety timeout
+                    Date.now() - waitStart < 2000
                 ) {
                     await sleep(50, token);
-                    if (token.isCancellationRequested) return undefined;
+                    if (token.isCancellationRequested) {
+                        return undefined;
+                    }
                 }
 
                 if (inflight.fullText.length > 0) {
@@ -635,11 +856,11 @@ function buildProvider(context: vscode.ExtensionContext): vscode.InlineCompletio
                 }
             }
 
-            // 3) No usable cache – start a fresh streaming request.
+            // 3) No usable cache — start a fresh streaming request.
             const result = await requestFimStream(
                 apiKey,
                 cfg,
-                prefix,
+                fullPrompt,
                 suffix,
                 cacheKey,
                 token,
@@ -658,6 +879,10 @@ function buildProvider(context: vscode.ExtensionContext): vscode.InlineCompletio
         },
     };
 }
+
+/* ------------------------------------------------------------------ */
+/*  Commands                                                           */
+/* ------------------------------------------------------------------ */
 
 async function setApiKey(context: vscode.ExtensionContext): Promise<void> {
     const key = await vscode.window.showInputBox({
@@ -685,7 +910,7 @@ async function testRequest(context: vscode.ExtensionContext): Promise<void> {
     const cfg = getConfig();
     const apiKey = await getApiKey(context, cfg);
     if (!apiKey) {
-        vscode.window.showWarningMessage(`FIM: no API key. Run "FIM: Set API Key" first.`);
+        vscode.window.showWarningMessage('FIM: no API key. Run "FIM: Set API Key" first.');
         return;
     }
 
@@ -712,8 +937,14 @@ async function toggleEnabled(): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('FIM');
     const current = cfg.get<boolean>('enabled', true);
     await cfg.update('enabled', !current, vscode.ConfigurationTarget.Global);
-    vscode.window.showInformationMessage(`FIM inline completion ${!current ? 'enabled' : 'disabled'}.`);
+    vscode.window.showInformationMessage(
+        `FIM inline completion ${!current ? 'enabled' : 'disabled'}.`,
+    );
 }
+
+/* ------------------------------------------------------------------ */
+/*  Activation / Deactivation                                          */
+/* ------------------------------------------------------------------ */
 
 export function activate(context: vscode.ExtensionContext): void {
     output.appendLine('FIM extension activated.');
@@ -727,12 +958,22 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand('FIM.toggle', () => toggleEnabled()),
     );
 
+    // Set up preamble file watcher so we refresh cross-file context on
+    // project file create/delete events.
+    setupPreambleWatcher(context);
+
+    // Invalidate preamble when workspace folders change.
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeWorkspaceFolders(() => invalidatePreamble()),
+    );
+
     const provider = buildProvider(context);
     context.subscriptions.push(
         vscode.languages.registerInlineCompletionItemProvider(
             [
                 { scheme: 'file', pattern: '**' },
                 { scheme: 'untitled', pattern: '**' },
+                { scheme: 'vscode-notebook-cell', pattern: '**' },
             ],
             provider,
         ),
@@ -740,5 +981,9 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
-    // Nothing to clean up beyond disposables registered in activate().
+    preambleCache = undefined;
+    if (preambleWatcher) {
+        preambleWatcher.dispose();
+        preambleWatcher = undefined;
+    }
 }

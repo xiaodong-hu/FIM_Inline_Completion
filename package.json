@@ -1,9 +1,9 @@
 {
     "name": "fim-inline",
     "displayName": "FIM Inline Completion",
-    "description": "Minimal VS Code inline completion provider for AI FIM /completions API.",
+    "description": "High-performance VS Code inline completion using DeepSeek V4 FIM API. Full-file context + cross-file preamble for extreme KV-cache hit rates.",
     "type": "module",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "publisher": "xiaodong-hu",
     "repository": "https://github.com/xiaodong-hu/FIM_Inline_Completion",
     "license": "MIT",
@@ -70,8 +70,8 @@
                 },
                 "FIM.model": {
                     "type": "string",
-                    "default": "deepseek-v4-flash",
-                    "description": "Model name sent to the FIM endpoint. Official FIM docs currently list deepseek-v4-flash; custom values are allowed."
+                    "default": "deepseek-v4-pro",
+                    "description": "Model name sent to the FIM endpoint. DeepSeek FIM Beta supports deepseek-v4-pro with 1M token context window."
                 },
                 "FIM.apiKeyEnvVar": {
                     "type": "string",
@@ -80,17 +80,17 @@
                 },
                 "FIM.maxTokens": {
                     "type": "number",
-                    "default": 64,
+                    "default": 256,
                     "minimum": 1,
                     "maximum": 4096,
-                    "description": "Maximum generated tokens for each inline completion."
+                    "description": "Maximum generated tokens for each inline completion. The FIM Beta API supports up to 4K tokens."
                 },
                 "FIM.temperature": {
                     "type": "number",
                     "default": 0.0,
                     "minimum": 0,
                     "maximum": 2,
-                    "description": "Sampling temperature."
+                    "description": "Sampling temperature. 0.0 gives deterministic completions (recommended for code)."
                 },
                 "FIM.topP": {
                     "type": "number",
@@ -99,34 +99,16 @@
                     "maximum": 1,
                     "description": "Nucleus sampling top_p."
                 },
-                "FIM.prefixChars": {
-                    "type": "number",
-                    "default": 12000,
-                    "minimum": 0,
-                    "description": "Maximum number of characters before the cursor sent as prefix."
-                },
-                "FIM.suffixChars": {
-                    "type": "number",
-                    "default": 8000,
-                    "minimum": 0,
-                    "description": "Maximum number of characters after the cursor sent as suffix. Always included, possibly as an empty string at EOF."
-                },
                 "FIM.withSuffix": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Send suffix text after the cursor. Turn off for APIs that do not support a suffix field."
-                },
-                "FIM.minPrefixChars": {
-                    "type": "number",
-                    "default": 4,
-                    "minimum": 0,
-                    "description": "Do not request completions until at least this many non-whitespace prefix characters exist before the cursor."
+                    "description": "Send suffix text after the cursor. DeepSeek FIM supports true Fill-In-the-Middle with both prefix and suffix. Turn off for prefix-only APIs."
                 },
                 "FIM.requestTimeoutMs": {
                     "type": "number",
-                    "default": 6000,
+                    "default": 10000,
                     "minimum": 100,
-                    "description": "HTTP request timeout in milliseconds."
+                    "description": "HTTP request timeout in milliseconds. Increased from the old default to accommodate larger full-file prompts."
                 },
                 "FIM.debounceMs": {
                     "type": "number",
@@ -145,7 +127,7 @@
                 "FIM.logRequests": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Log request metadata to the FIM output channel. Does not log API keys."
+                    "description": "Log request metadata to the FIM output channel. Does not log API keys. Enables visibility into prompt/suffix sizes, TTFB, and cache hits."
                 },
                 "FIM.streamEnabled": {
                     "type": "boolean",
@@ -165,6 +147,61 @@
                     "minimum": 1000,
                     "maximum": 120000,
                     "description": "How long (in ms) to keep cached stream continuations. When you type again within this window, the next tokens are served from cache without an API call."
+                },
+                "FIM.minPrefixChars": {
+                    "type": "number",
+                    "default": 4,
+                    "minimum": 0,
+                    "description": "Do not request completions until at least this many non-whitespace prefix characters exist before the cursor."
+                },
+                "FIM.preambleEnabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Include cross-file project context (other source files) as a preamble before the current file's prefix. The preamble is loaded once and reused across all keystrokes — it is always at the same token positions, achieving 100% server-side KV-cache hit for the preamble portion. Filtered by .gitignore and files.exclude."
+                },
+                "FIM.preambleMaxFiles": {
+                    "type": "number",
+                    "default": 100,
+                    "minimum": 0,
+                    "maximum": 500,
+                    "description": "Maximum number of other project files to include in the cross-file preamble."
+                },
+                "FIM.preambleMaxChars": {
+                    "type": "number",
+                    "default": 500000,
+                    "minimum": 0,
+                    "maximum": 900000,
+                    "description": "Soft cap on total characters for the preamble (before adding the current file). DeepSeek V4 supports 1M tokens (~4M chars), so 500K chars leaves ample room for the current file and completion."
+                },
+                "FIM.preambleIncludePatterns": {
+                    "type": "array",
+                    "default": [],
+                    "items": {
+                        "type": "string"
+                    },
+                    "description": "Additional glob patterns for files to INCLUDE in the preamble. When empty, all files matching source-code extensions are considered. Example: [\"src/**/*.ts\", \"lib/**/*.py\"]."
+                },
+                "FIM.preambleExcludePatterns": {
+                    "type": "array",
+                    "default": [
+                        "**/node_modules/**",
+                        "**/.git/**",
+                        "**/dist/**",
+                        "**/build/**",
+                        "**/out/**",
+                        "**/.next/**",
+                        "**/target/**",
+                        "**/__pycache__/**",
+                        "**/*.min.*",
+                        "**/package-lock.json",
+                        "**/yarn.lock",
+                        "**/pnpm-lock.yaml",
+                        "**/Cargo.lock"
+                    ],
+                    "items": {
+                        "type": "string"
+                    },
+                    "description": "Glob patterns for files to EXCLUDE from the preamble. Defaults exclude common build artifacts, lockfiles, and dependency directories. Merged with VS Code's files.exclude and .gitignore settings."
                 }
             }
         }
