@@ -1,0 +1,10 @@
+.git/**
+.github/**
+.vscode-test/**
+src/**
+out/**/*.map
+out/**/*.test.js
+out/**/*.test.js.map
+tsconfig.json
+tsconfig.tsbuildinfo
+*.vsix

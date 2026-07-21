@@ -1,9 +1,9 @@
 {
     "name": "fim-inline",
     "displayName": "FIM Inline Completion",
-    "description": "High-performance VS Code inline completion using DeepSeek V4 FIM API. Full-file context + cross-file preamble for extreme KV-cache hit rates.",
+    "description": "Cost-aware VS Code inline completion using DeepSeek's prefix-and-suffix FIM API.",
     "type": "module",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "publisher": "xiaodong-hu",
     "repository": "https://github.com/xiaodong-hu/FIM_Inline_Completion",
     "license": "MIT",
@@ -99,22 +99,24 @@
                     "maximum": 1,
                     "description": "Nucleus sampling top_p."
                 },
-                "FIM.withSuffix": {
-                    "type": "boolean",
-                    "default": true,
-                    "description": "Send suffix text after the cursor. DeepSeek FIM supports true Fill-In-the-Middle with both prefix and suffix. Turn off for prefix-only APIs."
-                },
                 "FIM.requestTimeoutMs": {
                     "type": "number",
-                    "default": 10000,
+                    "default": 30000,
                     "minimum": 100,
-                    "description": "HTTP request timeout in milliseconds. Increased from the old default to accommodate larger full-file prompts."
+                    "description": "HTTP request timeout in milliseconds. Full-document cache-warming requests can take longer than later cache hits."
                 },
                 "FIM.debounceMs": {
                     "type": "number",
-                    "default": 200,
+                    "default": 250,
                     "minimum": 0,
-                    "description": "Delay before making the request. VS Code usually cancels older requests while typing."
+                    "description": "Delay before a cache-miss request. Local completion-cache hits bypass this delay."
+                },
+                "FIM.revalidateDelayMs": {
+                    "type": "number",
+                    "default": 1500,
+                    "minimum": 0,
+                    "maximum": 30000,
+                    "description": "After part of a cached ghost completion is accepted, wait this long after the last edit before generating a fresh continuation. This avoids one request per accepted word."
                 },
                 "FIM.stop": {
                     "type": "array",
@@ -127,7 +129,7 @@
                 "FIM.logRequests": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Log request metadata to the FIM output channel. Does not log API keys. Enables visibility into prompt/suffix sizes, TTFB, and cache hits."
+                    "description": "Log safe request metadata and DeepSeek-reported prompt cache hit/miss tokens to the FIM output channel. Never logs source text or API keys."
                 },
                 "FIM.streamEnabled": {
                     "type": "boolean",
@@ -139,77 +141,37 @@
                     "default": 5,
                     "minimum": 1,
                     "maximum": 64,
-                    "description": "How many tokens to collect before showing the first inline completion chunk. Lower values make completions appear faster. The rest of the stream is cached for the next keystroke."
+                    "description": "Approximate number of tokens to collect before first showing a streamed completion. The stream continues into the content-validated local cache."
                 },
-                "FIM.streamCacheTtlMs": {
+                "FIM.localCacheTtlMs": {
                     "type": "number",
-                    "default": 30000,
+                    "default": 300000,
                     "minimum": 1000,
-                    "maximum": 120000,
-                    "description": "How long (in ms) to keep cached stream continuations. When you type again within this window, the next tokens are served from cache without an API call."
+                    "maximum": 3600000,
+                    "description": "How long to retain local completions. Entries store hashes of document context rather than copies of the document."
+                },
+                "FIM.localCacheMaxEntries": {
+                    "type": "number",
+                    "default": 64,
+                    "minimum": 1,
+                    "maximum": 512,
+                    "description": "Maximum number of content-validated completions retained in memory across documents."
                 },
                 "FIM.minPrefixChars": {
                     "type": "number",
                     "default": 4,
                     "minimum": 0,
                     "description": "Do not request completions until at least this many non-whitespace prefix characters exist before the cursor."
-                },
-                "FIM.preambleEnabled": {
-                    "type": "boolean",
-                    "default": true,
-                    "description": "Include cross-file project context (other source files) as a preamble before the current file's prefix. The preamble is loaded once and reused across all keystrokes — it is always at the same token positions, achieving 100% server-side KV-cache hit for the preamble portion. Filtered by .gitignore and files.exclude."
-                },
-                "FIM.preambleMaxFiles": {
-                    "type": "number",
-                    "default": 100,
-                    "minimum": 0,
-                    "maximum": 500,
-                    "description": "Maximum number of other project files to include in the cross-file preamble."
-                },
-                "FIM.preambleMaxChars": {
-                    "type": "number",
-                    "default": 500000,
-                    "minimum": 0,
-                    "maximum": 900000,
-                    "description": "Soft cap on total characters for the preamble (before adding the current file). DeepSeek V4 supports 1M tokens (~4M chars), so 500K chars leaves ample room for the current file and completion."
-                },
-                "FIM.preambleIncludePatterns": {
-                    "type": "array",
-                    "default": [],
-                    "items": {
-                        "type": "string"
-                    },
-                    "description": "Additional glob patterns for files to INCLUDE in the preamble. When empty, all files matching source-code extensions are considered. Example: [\"src/**/*.ts\", \"lib/**/*.py\"]."
-                },
-                "FIM.preambleExcludePatterns": {
-                    "type": "array",
-                    "default": [
-                        "**/node_modules/**",
-                        "**/.git/**",
-                        "**/dist/**",
-                        "**/build/**",
-                        "**/out/**",
-                        "**/.next/**",
-                        "**/target/**",
-                        "**/__pycache__/**",
-                        "**/*.min.*",
-                        "**/package-lock.json",
-                        "**/yarn.lock",
-                        "**/pnpm-lock.yaml",
-                        "**/Cargo.lock"
-                    ],
-                    "items": {
-                        "type": "string"
-                    },
-                    "description": "Glob patterns for files to EXCLUDE from the preamble. Defaults exclude common build artifacts, lockfiles, and dependency directories. Merged with VS Code's files.exclude and .gitignore settings."
                 }
             }
         }
     },
     "scripts": {
+        "vscode:prepublish": "npm run compile",
         "compile": "tsc -p ./",
         "watch": "tsc -watch -p ./",
-        "package": "vsce package"
+        "test": "npm run compile && node --test out/*.test.js",
+        "package": "vsce package --no-dependencies"
     },
     "devDependencies": {
         "@types/node": "^20.17.0",
