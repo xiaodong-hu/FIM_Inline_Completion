@@ -70,8 +70,8 @@
                 },
                 "FIM.model": {
                     "type": "string",
-                    "default": "deepseek-v4-pro",
-                    "description": "Model name sent to the FIM endpoint. DeepSeek FIM Beta supports deepseek-v4-pro with 1M token context window."
+                    "default": "deepseek-v4-flash",
+                    "description": "Model name sent to the FIM endpoint."
                 },
                 "FIM.apiKeyEnvVar": {
                     "type": "string",
@@ -87,10 +87,10 @@
                 },
                 "FIM.temperature": {
                     "type": "number",
-                    "default": 0.0,
+                    "default": 0.05,
                     "minimum": 0,
                     "maximum": 2,
-                    "description": "Sampling temperature. 0.0 gives deterministic completions (recommended for code)."
+                    "description": "Sampling temperature. The default keeps code completions stable while allowing slight variation."
                 },
                 "FIM.topP": {
                     "type": "number",
@@ -101,9 +101,16 @@
                 },
                 "FIM.requestTimeoutMs": {
                     "type": "number",
-                    "default": 30000,
+                    "default": 3000,
                     "minimum": 100,
                     "description": "HTTP request timeout in milliseconds. Full-document cache-warming requests can take longer than later cache hits."
+                },
+                "FIM.maxConcurrentRequests": {
+                    "type": "number",
+                    "default": 4,
+                    "minimum": 1,
+                    "maximum": 16,
+                    "description": "Maximum number of distinct FIM requests allowed to keep streaming in the background. When the limit is exceeded, the oldest request is aborted to bound retained full-document inputs."
                 },
                 "FIM.debounceMs": {
                     "type": "number",
@@ -128,12 +135,12 @@
                 },
                 "FIM.logRequests": {
                     "type": "boolean",
-                    "default": false,
+                    "default": true,
                     "description": "Log safe request metadata and DeepSeek-reported prompt cache hit/miss tokens to the FIM output channel. Never logs source text or API keys."
                 },
                 "FIM.streamEnabled": {
                     "type": "boolean",
-                    "default": true,
+                    "default": false,
                     "description": "Enable progressive streaming: show completions as soon as the first chunk of tokens arrives, then continue fetching more in the background for the next keystroke."
                 },
                 "FIM.streamTokens": {
@@ -145,7 +152,7 @@
                 },
                 "FIM.localCacheTtlMs": {
                     "type": "number",
-                    "default": 300000,
+                    "default": 3000,
                     "minimum": 1000,
                     "maximum": 3600000,
                     "description": "How long to retain local completions. Entries store hashes of document context rather than copies of the document."

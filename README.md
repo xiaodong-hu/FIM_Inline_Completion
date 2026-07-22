@@ -32,7 +32,7 @@ This extension uses two layers:
    - A cache-miss request always starts at byte zero of the current document.
    - Normal forward editing preserves the largest possible common prefix.
    - DeepSeek reports hit and miss counts in `prompt_cache_hit_tokens` and
-     `prompt_cache_miss_tokens`; enable `FIM.logRequests` to inspect them.
+     `prompt_cache_miss_tokens`; inspect the FIM output channel to see them.
 
 The former project-wide preamble was removed. It added unrelated tokens to
 every request and a change near the start of that concatenation could invalidate
@@ -87,7 +87,14 @@ Streaming responses are decoded incrementally, including JSON events split
 across network chunks. Once an input request has reached DeepSeek, its stream is
 allowed to finish in the background even if VS Code cancels the old UI request;
 the input has already been billed, and retaining the output often avoids the
-next request entirely.
+next request entirely. At most four distinct requests run in the background by
+default; starting another aborts the oldest one so full-document request bodies
+cannot accumulate without bound.
+
+The local cache is independently bounded by entry count and TTL. Expired entries
+are pruned on access and periodically while the editor is idle. Closing a
+document immediately removes its cached completions, delayed refresh, and
+background requests.
 
 ## Installation
 
@@ -104,15 +111,18 @@ Alternatively, set `DEEPSEEK_API_KEY` in the environment that launches VS Code.
 
 | Setting | Default | Purpose |
 | --- | ---: | --- |
-| `FIM.model` | `deepseek-v4-pro` | Model sent to the FIM endpoint |
+| `FIM.model` | `deepseek-v4-flash` | Model sent to the FIM endpoint |
 | `FIM.maxTokens` | `256` | Maximum generated tokens; DeepSeek FIM allows up to 4096 |
+| `FIM.temperature` | `0.05` | Sampling temperature |
+| `FIM.requestTimeoutMs` | `3000` | HTTP request timeout |
+| `FIM.maxConcurrentRequests` | `4` | Bound for background streams retaining full-document inputs |
 | `FIM.debounceMs` | `250` | Delay for a genuine local-cache miss |
 | `FIM.revalidateDelayMs` | `1500` | Quiet period before refreshing a partially accepted completion |
-| `FIM.streamEnabled` | `true` | Display early text while the rest streams into cache |
+| `FIM.streamEnabled` | `false` | Display early text while the rest streams into cache |
 | `FIM.streamTokens` | `5` | Approximate early-display threshold |
-| `FIM.localCacheTtlMs` | `300000` | Local completion lifetime |
+| `FIM.localCacheTtlMs` | `3000` | Local completion lifetime |
 | `FIM.localCacheMaxEntries` | `64` | Cross-document entry bound |
-| `FIM.logRequests` | `false` | Log sizes, latency, and DeepSeek cache usage without source text |
+| `FIM.logRequests` | `true` | Log sizes, latency, and DeepSeek cache usage without source text |
 
 The removed `FIM.withSuffix`, `FIM.streamCacheTtlMs`, and `FIM.preamble*`
 settings are ignored when upgrading from 0.2.x. Suffix transmission is now
@@ -138,6 +148,7 @@ The cost-sensitive logic is kept outside the VS Code adapter and covered by
 tests:
 
 - `src/completionCache.ts`: exact and partial-acceptance validation
+- `src/requestRegistry.ts`: bounded background-request retention and eviction
 - `src/fimClient.ts`: request construction, streaming SSE, and usage parsing
 - `src/extension.ts`: VS Code lifecycle, debounce, deduplication, and refresh
 
