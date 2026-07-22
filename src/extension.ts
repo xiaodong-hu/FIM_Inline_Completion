@@ -10,8 +10,11 @@ import {
     type FimCompletionTask,
     type FimUsage,
 } from './fimClient.js';
+import { BoundedRequestRegistry, type AbortableRequest } from './requestRegistry.js';
 
 const SECRET_KEY = 'FIM.apiKey';
+const DEFAULT_MAX_CONCURRENT_REQUESTS = 4;
+const CACHE_PRUNE_INTERVAL_MS = 30_000;
 const output = vscode.window.createOutputChannel('FIM');
 
 interface ExtensionConfig {
@@ -33,6 +36,7 @@ interface ExtensionConfig {
     streamTokens: number;
     localCacheTtlMs: number;
     localCacheMaxEntries: number;
+    maxConcurrentRequests: number;
     minPrefixChars: number;
 }
 
@@ -41,15 +45,18 @@ interface DocumentFimContext extends CompletionContext {
     cursorOffset: number;
 }
 
-interface ActiveRequest {
+interface ActiveRequest extends AbortableRequest {
     entry: CompletionCacheEntry;
     task: FimCompletionTask;
     startedAt: number;
+    discarded: boolean;
+    abort(): void;
 }
 
 const completionCache = new CompletionCache();
-const inFlight = new Map<string, ActiveRequest>();
+const inFlight = new BoundedRequestRegistry<ActiveRequest>(DEFAULT_MAX_CONCURRENT_REQUESTS);
 const refreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
+let cachePruneTimer: ReturnType<typeof setInterval> | undefined;
 let warnedMissingKey = false;
 
 function getConfig(): ExtensionConfig {
@@ -59,20 +66,24 @@ function getConfig(): ExtensionConfig {
         provider: cfg.get<'deepseek' | 'custom'>('provider', 'deepseek'),
         baseUrl: cfg.get<string>('baseUrl', 'https://api.deepseek.com/beta'),
         completionsPath: cfg.get<string>('completionsPath', '/completions'),
-        model: cfg.get<string>('model', 'deepseek-v4-pro'),
+        model: cfg.get<string>('model', 'deepseek-v4-flash'),
         apiKeyEnvVar: cfg.get<string>('apiKeyEnvVar', 'DEEPSEEK_API_KEY'),
         maxTokens: cfg.get<number>('maxTokens', 256),
-        temperature: cfg.get<number>('temperature', 0),
+        temperature: cfg.get<number>('temperature', 0.05),
         topP: cfg.get<number>('topP', 0.9),
-        requestTimeoutMs: cfg.get<number>('requestTimeoutMs', 30_000),
+        requestTimeoutMs: cfg.get<number>('requestTimeoutMs', 3_000),
         debounceMs: cfg.get<number>('debounceMs', 250),
         revalidateDelayMs: cfg.get<number>('revalidateDelayMs', 1_500),
         stop: cfg.get<string[]>('stop', []),
-        logRequests: cfg.get<boolean>('logRequests', false),
-        streamEnabled: cfg.get<boolean>('streamEnabled', true),
+        logRequests: cfg.get<boolean>('logRequests', true),
+        streamEnabled: cfg.get<boolean>('streamEnabled', false),
         streamTokens: cfg.get<number>('streamTokens', 5),
-        localCacheTtlMs: cfg.get<number>('localCacheTtlMs', 5 * 60_000),
+        localCacheTtlMs: cfg.get<number>('localCacheTtlMs', 3_000),
         localCacheMaxEntries: cfg.get<number>('localCacheMaxEntries', 64),
+        maxConcurrentRequests: cfg.get<number>(
+            'maxConcurrentRequests',
+            DEFAULT_MAX_CONCURRENT_REQUESTS,
+        ),
         minPrefixChars: cfg.get<number>('minPrefixChars', 4),
     };
 }
@@ -210,6 +221,7 @@ function startRequest(
         ttlMs: cfg.localCacheTtlMs,
         maxEntries: cfg.localCacheMaxEntries,
     });
+    inFlight.configure(cfg.maxConcurrentRequests);
 
     const snapshotKey = makeSnapshotKey(fimContext);
     const existing = inFlight.get(snapshotKey);
@@ -257,10 +269,26 @@ function startRequest(
         },
     });
 
-    const active: ActiveRequest = { entry, task, startedAt };
-    inFlight.set(snapshotKey, active);
+    const active: ActiveRequest = {
+        entry,
+        task,
+        startedAt,
+        discarded: false,
+        abort() {
+            if (active.discarded) {
+                return;
+            }
+            active.discarded = true;
+            completionCache.delete(entry);
+            task.abort();
+        },
+    };
+    inFlight.add(snapshotKey, active);
 
     void task.done.then(result => {
+        if (active.discarded) {
+            return;
+        }
         entry.text = result.text;
         entry.complete = true;
         entry.lastAccess = Date.now();
@@ -279,9 +307,7 @@ function startRequest(
             logUsage(result.usage);
         }
     }).finally(() => {
-        if (inFlight.get(snapshotKey) === active) {
-            inFlight.delete(snapshotKey);
-        }
+        inFlight.delete(snapshotKey, active);
     });
 
     return active;
@@ -347,6 +373,23 @@ function scheduleRevalidation(
         })();
     }, cfg.revalidateDelayMs);
     refreshTimers.set(fimContext.documentUri, timer);
+}
+
+function releaseDocument(documentUri: string): void {
+    const timer = refreshTimers.get(documentUri);
+    if (timer) {
+        clearTimeout(timer);
+        refreshTimers.delete(documentUri);
+    }
+    inFlight.discardWhere(active => active.entry.documentUri === documentUri);
+    completionCache.deleteDocument(documentUri);
+}
+
+function stopCachePruning(): void {
+    if (cachePruneTimer) {
+        clearInterval(cachePruneTimer);
+        cachePruneTimer = undefined;
+    }
 }
 
 function buildProvider(
@@ -495,8 +538,20 @@ async function toggleEnabled(): Promise<void> {
 
 export function activate(context: vscode.ExtensionContext): void {
     output.appendLine('FIM extension activated.');
+    const cfg = getConfig();
+    completionCache.configure({
+        ttlMs: cfg.localCacheTtlMs,
+        maxEntries: cfg.localCacheMaxEntries,
+    });
+    inFlight.configure(cfg.maxConcurrentRequests);
+    stopCachePruning();
+    cachePruneTimer = setInterval(() => completionCache.prune(), CACHE_PRUNE_INTERVAL_MS);
     context.subscriptions.push(
         output,
+        { dispose: stopCachePruning },
+        vscode.workspace.onDidCloseTextDocument(document => {
+            releaseDocument(document.uri.toString());
+        }),
         vscode.commands.registerCommand('FIM.setApiKey', () => setApiKey(context)),
         vscode.commands.registerCommand('FIM.clearApiKey', () => clearApiKey(context)),
         vscode.commands.registerCommand('FIM.testRequest', () => testRequest(context)),
@@ -513,13 +568,11 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
+    stopCachePruning();
     for (const timer of refreshTimers.values()) {
         clearTimeout(timer);
     }
     refreshTimers.clear();
-    for (const active of inFlight.values()) {
-        active.task.abort();
-    }
     inFlight.clear();
     completionCache.clear();
 }

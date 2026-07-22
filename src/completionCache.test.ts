@@ -104,6 +104,21 @@ test('expires old entries and enforces the configured entry bound', () => {
     assert.equal(cache.size, 0);
 });
 
+test('supports proactive idle pruning and document cleanup', () => {
+    const cache = new CompletionCache({ ttlMs: 50 });
+    cache.create(context('old'), 0).complete = true;
+    cache.prune(51);
+    assert.equal(cache.size, 0);
+
+    cache.create(context('first'), 100).complete = true;
+    cache.create({
+        ...context('second'),
+        documentUri: 'file:///workspace/other.ts',
+    }, 100).complete = true;
+    cache.deleteDocument('file:///workspace/example.ts');
+    assert.equal(cache.size, 1);
+});
+
 test('snapshot identity includes prefix, suffix, document, and request settings', () => {
     const base = context('prefix', 'suffix');
     assert.notEqual(makeSnapshotKey(base), makeSnapshotKey({ ...base, prefix: 'prefix!' }));

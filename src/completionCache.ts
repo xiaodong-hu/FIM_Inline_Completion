@@ -35,7 +35,7 @@ export interface CompletionCacheOptions {
 }
 
 const DEFAULT_OPTIONS: CompletionCacheOptions = {
-    ttlMs: 5 * 60_000,
+    ttlMs: 3_000,
     maxEntries: 64,
 };
 
@@ -114,6 +114,14 @@ export class CompletionCache {
         this.entries.delete(typeof entryOrId === 'string' ? entryOrId : entryOrId.id);
     }
 
+    deleteDocument(documentUri: string): void {
+        for (const [id, entry] of this.entries) {
+            if (entry.documentUri === documentUri) {
+                this.entries.delete(id);
+            }
+        }
+    }
+
     clear(): void {
         this.entries.clear();
     }
@@ -164,7 +172,8 @@ export class CompletionCache {
         return this.entries.size;
     }
 
-    private prune(now = Date.now()): void {
+    /** Remove expired entries even when no completion lookup is occurring. */
+    prune(now = Date.now()): void {
         for (const [id, entry] of this.entries) {
             if (now - entry.lastAccess > this.options.ttlMs) {
                 this.entries.delete(id);
